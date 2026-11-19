@@ -81,7 +81,7 @@ export const SecurityModulesSection: React.FC<SecurityModulesSectionProps> = ({
 
   // Live TLS Scanner State
   const [targetHost, setTargetHost] = useState<string>('nist.gov');
-  const [targetPort, setTargetPort] = useState<number>(443);
+  const [targetPortInput, setTargetPortInput] = useState<string>('443');
   const [recordInInventory, setRecordInInventory] = useState<boolean>(true);
   const [isScanningHost, setIsScanningHost] = useState<boolean>(false);
   const [scanResult, setScanResult] = useState<TLSScanResult | null>(null);
@@ -147,6 +147,10 @@ export const SecurityModulesSection: React.FC<SecurityModulesSectionProps> = ({
 
   const handleVerifySignature = () => {
     if (!generatedKey || generatedKey.kind !== 'SIGNATURE') return;
+    if (!sigMessage.trim()) {
+      setKeyError('Enter a payload message to sign.');
+      return;
+    }
     setKeyError(null);
     try {
       const res = verifySignatureRoundTrip(
@@ -163,7 +167,22 @@ export const SecurityModulesSection: React.FC<SecurityModulesSectionProps> = ({
 
   const handleCopyKey = async () => {
     if (!generatedKey) return;
-    await navigator.clipboard.writeText(generatedKey.publicKeyPem);
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(generatedKey.publicKeyPem);
+      } else {
+        throw new Error('Clipboard API unavailable');
+      }
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = generatedKey.publicKeyPem;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
     setCopiedKey(true);
     setTimeout(() => setCopiedKey(false), 2000);
   };
@@ -180,9 +199,18 @@ export const SecurityModulesSection: React.FC<SecurityModulesSectionProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  const handleRunTlsScan = async (overrideHost?: string) => {
+  const handleRunTlsScan = async (overrideHost?: string, overridePort?: number) => {
     const hostToScan = (overrideHost ?? targetHost).trim();
-    if (!hostToScan) return;
+    if (!hostToScan) {
+      setScanError('Enter a target domain name to scan.');
+      return;
+    }
+    const parsedPort = overridePort ?? Number(targetPortInput);
+    if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+      setScanError('Port must be an integer between 1 and 65535.');
+      return;
+    }
+
     setIsScanningHost(true);
     setScanError(null);
 
@@ -192,7 +220,7 @@ export const SecurityModulesSection: React.FC<SecurityModulesSectionProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host: hostToScan,
-          port: targetPort,
+          port: parsedPort,
           recordInInventory,
         }),
       });
@@ -236,11 +264,27 @@ export const SecurityModulesSection: React.FC<SecurityModulesSectionProps> = ({
 
   const handleResetWorkspaceCbom = async () => {
     setCbomError(null);
-    const resp = await fetch('/api/cbom');
-    if (resp.ok) {
+    try {
+      const resp = await fetch('/api/cbom');
       const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data.error || 'Failed to load workspace CBOM.');
+      }
       onUpdateCbomEntries(data.entries);
+    } catch (err) {
+      setCbomError(err instanceof Error ? err.message : 'Failed to reload workspace CBOM.');
     }
+  };
+
+  const handleManifestFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    setManifestText(text);
+    if (file.name.endsWith('.txt')) setManifestType('requirements.txt');
+    else if (file.name.endsWith('.mod')) setManifestType('go.mod');
+    else if (file.name.endsWith('.toml')) setManifestType('Cargo.toml');
+    else setManifestType('package.json');
   };
 
   const handleExportCycloneDX = () => {
@@ -676,7 +720,13 @@ export const SecurityModulesSection: React.FC<SecurityModulesSectionProps> = ({
               server to evaluate key exchange groups, cipher suites, and certificate signatures.
             </p>
 
-            <div className="flex flex-col sm:flex-row gap-3">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleRunTlsScan();
+              }}
+              className="flex flex-col sm:flex-row gap-3"
+            >
               <div className="relative flex-1">
                 <Radio className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
@@ -692,21 +742,21 @@ export const SecurityModulesSection: React.FC<SecurityModulesSectionProps> = ({
                 type="number"
                 min={1}
                 max={65535}
-                value={targetPort}
-                onChange={(e) => setTargetPort(Number(e.target.value) || 443)}
+                value={targetPortInput}
+                onChange={(e) => setTargetPortInput(e.target.value)}
                 aria-label="TLS Port"
                 className="w-24 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:ring-1 focus:ring-cyan-500"
               />
 
               <button
-                onClick={() => handleRunTlsScan()}
+                type="submit"
                 disabled={isScanningHost}
                 className="px-4 py-2 bg-cyan-400 hover:bg-cyan-300 text-slate-950 font-semibold text-xs rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50 whitespace-nowrap"
               >
                 <RotateCw className={`w-3.5 h-3.5 ${isScanningHost ? 'animate-spin' : ''}`} />
                 <span>{isScanningHost ? 'Handshaking...' : 'Scan Live Host'}</span>
               </button>
-            </div>
+            </form>
 
             <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
               <div className="flex flex-wrap items-center gap-3">
@@ -714,10 +764,11 @@ export const SecurityModulesSection: React.FC<SecurityModulesSectionProps> = ({
                 {PUBLIC_TLS_PRESETS.map((host) => (
                   <button
                     key={host}
+                    type="button"
                     onClick={() => {
                       setTargetHost(host);
-                      setTargetPort(443);
-                      handleRunTlsScan(host);
+                      setTargetPortInput('443');
+                      handleRunTlsScan(host, 443);
                     }}
                     className="text-xs font-mono text-slate-300 hover:text-cyan-400 underline decoration-slate-700"
                   >
@@ -907,16 +958,28 @@ export const SecurityModulesSection: React.FC<SecurityModulesSectionProps> = ({
                 <label className="text-xs font-semibold text-white">
                   Analyze External Dependency Manifest
                 </label>
-                <select
-                  value={manifestType}
-                  onChange={(e) => setManifestType(e.target.value as typeof manifestType)}
-                  className="bg-slate-950 border border-slate-800 rounded-md px-2.5 py-1 text-xs text-slate-200 font-mono"
-                >
-                  <option value="package.json">package.json (Node.js)</option>
-                  <option value="requirements.txt">requirements.txt (Python)</option>
-                  <option value="go.mod">go.mod (Go)</option>
-                  <option value="Cargo.toml">Cargo.toml (Rust)</option>
-                </select>
+                <div className="flex items-center gap-2">
+                  <label className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded-md border border-slate-700 cursor-pointer inline-flex items-center gap-1.5">
+                    <Upload className="w-3 h-3" />
+                    <span>Load File</span>
+                    <input
+                      type="file"
+                      accept=".json,.txt,.mod,.toml"
+                      onChange={handleManifestFileUpload}
+                      className="hidden"
+                    />
+                  </label>
+                  <select
+                    value={manifestType}
+                    onChange={(e) => setManifestType(e.target.value as typeof manifestType)}
+                    className="bg-slate-950 border border-slate-800 rounded-md px-2.5 py-1 text-xs text-slate-200 font-mono"
+                  >
+                    <option value="package.json">package.json (Node.js)</option>
+                    <option value="requirements.txt">requirements.txt (Python)</option>
+                    <option value="go.mod">go.mod (Go)</option>
+                    <option value="Cargo.toml">Cargo.toml (Rust)</option>
+                  </select>
+                </div>
               </div>
               <textarea
                 value={manifestText}

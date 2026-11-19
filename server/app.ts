@@ -143,7 +143,7 @@ async function probeHybridMlKem(ip: string, host: string, port: number): Promise
   });
 }
 
-async function performLiveTlsScan(host: string, port: number): Promise<TLSScanResult> {
+export async function performLiveTlsScan(host: string, port: number): Promise<TLSScanResult> {
   const startedAt = Date.now();
   const resolved = await dns.lookup(host, { all: true });
   if (!resolved.length) {

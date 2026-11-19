@@ -38,6 +38,13 @@ export function classifyPrimitiveRisk(
 ): { risk: RiskLevel; recommendedPQC: string } {
   const normalized = algorithm.toUpperCase();
 
+  if (primitiveType === 'PQC Hybrid') {
+    return {
+      risk: 'LOW',
+      recommendedPQC: 'Migrate to pure ML-KEM-1024 / ML-DSA-87 by 2030',
+    };
+  }
+
   if (
     primitiveType === 'PQC Native' ||
     normalized.includes('ML-KEM') ||
@@ -49,13 +56,6 @@ export function classifyPrimitiveRisk(
     return {
       risk: 'COMPLIANT',
       recommendedPQC: 'NIST FIPS 203/204/205 Compliant',
-    };
-  }
-
-  if (primitiveType === 'PQC Hybrid') {
-    return {
-      risk: 'LOW',
-      recommendedPQC: 'Migrate to pure ML-KEM-1024 / ML-DSA-87 by 2030',
     };
   }
 

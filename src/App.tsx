@@ -83,9 +83,7 @@ export default function App() {
           );
         }
       } catch (err) {
-        if (!silent) {
-          showToast(err instanceof Error ? err.message : 'Live audit failed.', true);
-        }
+        showToast(err instanceof Error ? err.message : 'Live audit failed.', true);
       } finally {
         setIsAuditing(false);
         setIsLoading(false);
@@ -122,10 +120,16 @@ export default function App() {
   };
 
   const handleDeleteAsset = async (id: string) => {
-    const resp = await fetch(`/api/inventory/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    if (resp.ok) {
+    try {
+      const resp = await fetch(`/api/inventory/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to remove asset.');
+      }
       await runLiveAudit(true);
       showToast('Asset removed from live inventory.');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to remove asset.', true);
     }
   };
 
