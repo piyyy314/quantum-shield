@@ -130,12 +130,20 @@ npm run build
 
 ## 7. Security Controls & Responsible Disclosure
 
-- Security vulnerabilities should **not** be reported via public GitHub issues. Follow the coordinated disclosure procedures documented in [SECURITY.md](./SECURITY.md).
+- Security vulnerabilities must **not** be reported via public GitHub issues. Follow the coordinated disclosure procedures documented in [SECURITY.md](./SECURITY.md).
 - Detailed architectural and federal control mappings are maintained in [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) and [docs/COMPLIANCE_MAPPING.md](./docs/COMPLIANCE_MAPPING.md).
 
 ---
 
-## 8. Governance & Licensing
+## 8. Security Disclaimer & Authorized Use Notice
+
+- **Authorized Assessment Only:** The Live Quantum TLS / X.509 Endpoint Scanner (`POST /api/tls-scan`) initiates active network connections and TLS handshakes against target hosts. Operators must only scan domains, endpoints, and infrastructure for which they hold explicit organizational authorization.
+- **Cryptographic Validation Boundary:** Post-quantum key encapsulation and digital signature operations utilize `@noble/post-quantum` (pure TypeScript implementations aligned with NIST FIPS 203, FIPS 204, and FIPS 205). Software-only JavaScript/TypeScript execution is **not** FIPS 140-3 CMVP hardware-certified; regulated national security or federal production deployments requiring FIPS 140-3 validated cryptographic modules must integrate validated Hardware Security Modules (HSMs) or accredited cryptographic providers.
+- **No Warranty & Compliance Advisory:** Risk ratings, Mosca's Theorem `(X + Y) > Z` timelines, and CycloneDX CBOM outputs are provided as engineering decision-support artifacts and do not constitute formal Authority to Operate (ATO) certification or legal compliance attestation. Software is provided **"AS IS"** without warranty of any kind under the Apache License, Version 2.0.
+
+---
+
+## 9. Governance & Licensing
 
 - **License:** Distributed under the **Apache License, Version 2.0**. See [LICENSE](./LICENSE) for full legal terms.
 - **Contributions:** See [CONTRIBUTING.md](./CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md).

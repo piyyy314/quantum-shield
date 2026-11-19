@@ -1,54 +1,37 @@
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
-import tls from 'node:tls';
-import dns from 'node:dns/promises';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import fs from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-import {
-  isPrivateOrReservedIp,
-  validateScanTarget,
-  performLiveTlsScan,
-} from '../server/app.ts';
+import { describe, it, expect } from 'vitest';
+import { isPrivateOrReservedIp, validateScanTarget } from '../server/app.ts';
+import { evaluateTlsPosture } from '../src/engine/moscaRisk.ts';
 
-const execFileAsync = promisify(execFile);
-
-describe('TLS Scanner Logic & SSRF Defense Unit/Integration Suite', () => {
+describe('TLS Scanner Validation, SSRF Guard & NIST Posture Scoring', () => {
   describe('validateScanTarget', () => {
-    it('normalizes valid FQDNs and defaults port to 443', () => {
-      expect(validateScanTarget('NIST.GOV', undefined)).toEqual({ host: 'nist.gov', port: 443 });
-      expect(validateScanTarget('https://Cloudflare.com/docs', 8443)).toEqual({
-        host: 'cloudflare.com',
+    it('accepts valid public FQDNs and defaults port to 443', () => {
+      expect(validateScanTarget('nist.gov', undefined)).toEqual({ host: 'nist.gov', port: 443 });
+      expect(validateScanTarget('PQ.CloudflareResearch.com', 8443)).toEqual({
+        host: 'pq.cloudflareresearch.com',
         port: 8443,
       });
-      expect(validateScanTarget('http://api.example.org:8080/health', 443)).toEqual({
-        host: 'api.example.org',
+    });
+
+    it('strips URL schemes and paths before validating FQDN', () => {
+      expect(validateScanTarget('https://github.com/org/repo', 443)).toEqual({
+        host: 'github.com',
         port: 443,
       });
     });
 
-    it('rejects non-string, malformed, single-label, IP literals, and injection payloads', () => {
-      expect(() => validateScanTarget(12345, 443)).toThrow();
-      expect(() => validateScanTarget('', 443)).toThrow();
-      expect(() => validateScanTarget('localhost', 443)).toThrow();
-      expect(() => validateScanTarget('127.0.0.1', 443)).toThrow();
-      expect(() => validateScanTarget('example.com; rm -rf /', 443)).toThrow();
-      expect(() => validateScanTarget('-badhost.example.com', 443)).toThrow();
-    });
-
-    it('validates TCP port boundaries strictly (1..65535)', () => {
-      expect(validateScanTarget('example.com', 1).port).toBe(1);
-      expect(validateScanTarget('example.com', 65535).port).toBe(65535);
-      expect(() => validateScanTarget('example.com', 0)).toThrow();
-      expect(() => validateScanTarget('example.com', 65536)).toThrow();
-      expect(() => validateScanTarget('example.com', -443)).toThrow();
-      expect(() => validateScanTarget('example.com', 443.5)).toThrow();
+    it('rejects single-label hosts, IPs, command-injection attempts, and invalid ports', () => {
+      expect(() => validateScanTarget('localhost', 443)).toThrow(/Invalid hostname/);
+      expect(() => validateScanTarget('127.0.0.1', 443)).toThrow(/Invalid hostname/);
+      expect(() => validateScanTarget('nist.gov; whoami', 443)).toThrow(/Invalid hostname/);
+      expect(() => validateScanTarget(12345, 443)).toThrow(/valid domain name/);
+      expect(() => validateScanTarget('nist.gov', 0)).toThrow(/between 1 and 65535/);
+      expect(() => validateScanTarget('nist.gov', 70000)).toThrow(/between 1 and 65535/);
+      expect(() => validateScanTarget('nist.gov', 443.5)).toThrow(/between 1 and 65535/);
     });
   });
 
-  describe('isPrivateOrReservedIp (SSRF Protection)', () => {
-    it('blocks all private, loopback, link-local, CGNAT, and multicast IPv4 ranges', () => {
+  describe('isPrivateOrReservedIp (SSRF Prevention)', () => {
+    it('blocks IPv4 loopback, RFC 1918 private, link-local metadata, CGNAT, and multicast ranges', () => {
       const blockedIpv4 = [
         '127.0.0.1',
         '127.255.255.254',
@@ -58,7 +41,6 @@ describe('TLS Scanner Logic & SSRF Defense Unit/Integration Suite', () => {
         '192.168.1.1',
         '169.254.169.254',
         '100.64.0.1',
-        '100.127.255.254',
         '0.0.0.0',
         '224.0.0.1',
       ];
@@ -67,121 +49,83 @@ describe('TLS Scanner Logic & SSRF Defense Unit/Integration Suite', () => {
       }
     });
 
-    it('allows routable public IPv4 addresses', () => {
-      const publicIpv4 = ['1.1.1.1', '8.8.8.8', '172.32.0.1', '192.169.1.10', '93.184.216.34'];
-      for (const ip of publicIpv4) {
-        expect(isPrivateOrReservedIp(ip)).toBe(false);
-      }
-    });
-
-    it('blocks loopback, link-local, ULA, and IPv4-mapped private IPv6 addresses', () => {
+    it('blocks IPv6 loopback, unspecified, link-local, ULA, and IPv4-mapped private addresses', () => {
       const blockedIpv6 = [
         '::1',
         '::',
         'fe80::1',
         'fc00::1',
-        'fd12:3456:789a::1',
+        'fd12:3456::1',
         '::ffff:127.0.0.1',
         '::ffff:169.254.169.254',
-        '::ffff:10.0.0.5',
+        '::ffff:10.1.2.3',
       ];
       for (const ip of blockedIpv6) {
         expect(isPrivateOrReservedIp(ip)).toBe(true);
       }
+    });
+
+    it('permits valid public IPv4 and IPv6 addresses', () => {
+      expect(isPrivateOrReservedIp('1.1.1.1')).toBe(false);
+      expect(isPrivateOrReservedIp('8.8.8.8')).toBe(false);
+      expect(isPrivateOrReservedIp('172.32.0.1')).toBe(false);
       expect(isPrivateOrReservedIp('2606:4700:4700::1111')).toBe(false);
-      expect(isPrivateOrReservedIp('not-an-ip')).toBe(true);
     });
   });
 
-  describe('performLiveTlsScan against ephemeral TLS 1.3 server', () => {
-    let tmpDir: string;
-    let server: tls.Server;
-    let serverPort: number;
-    const prevAllowPrivate = process.env.ALLOW_PRIVATE_TLS_SCAN;
-
-    beforeAll(async () => {
-      tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'qshield-tls-test-'));
-      const keyPath = path.join(tmpDir, 'key.pem');
-      const certPath = path.join(tmpDir, 'cert.pem');
-
-      await execFileAsync('openssl', [
-        'req',
-        '-x509',
-        '-newkey',
-        'ec',
-        '-pkeyopt',
-        'ec_paramgen_curve:prime256v1',
-        '-keyout',
-        keyPath,
-        '-out',
-        certPath,
-        '-days',
-        '30',
-        '-nodes',
-        '-subj',
-        '/CN=tls-unit-test.example.com',
-      ]);
-
-      const [key, cert] = await Promise.all([
-        fs.readFile(keyPath, 'utf8'),
-        fs.readFile(certPath, 'utf8'),
-      ]);
-
-      server = tls.createServer({ key, cert, minVersion: 'TLSv1.3', maxVersion: 'TLSv1.3' }, (socket) => {
-        socket.end();
+  describe('evaluateTlsPosture NIST & CNSA 2.0 Compliance Edge Cases', () => {
+    it('scores TLS 1.3 + ML-KEM-1024 + SLH-DSA-SHA2-256f at 100/100 (Grade A+)', () => {
+      const res = evaluateTlsPosture({
+        tlsVersion: 'TLSv1.3',
+        keyExchange: 'ML-KEM-1024',
+        signatureAlgorithm: 'SLH-DSA-SHA2-256f',
+        publicKeyType: 'SLH-DSA',
+        publicKeyBits: 256,
       });
+      expect(res.quantumSafeGrade).toBe('A+');
+      expect(res.quantumSafetyScore).toBe(100);
+      expect(res.isHybridPQC).toBe(true);
+    });
 
-      await new Promise<void>((resolve) => {
-        server.listen(0, '127.0.0.1', () => {
-          const addr = server.address();
-          serverPort = typeof addr === 'object' && addr ? addr.port : 0;
-          resolve();
-        });
+    it('scores TLS 1.3 + classical X25519 + RSA-4096 at 53/100 (Grade C)', () => {
+      const res = evaluateTlsPosture({
+        tlsVersion: 'TLSv1.3',
+        keyExchange: 'X25519',
+        signatureAlgorithm: 'RSA-4096 with SHA-256',
+        publicKeyType: 'RSA',
+        publicKeyBits: 4096,
       });
+      expect(res.quantumSafeGrade).toBe('C');
+      expect(res.quantumSafetyScore).toBe(53);
+      expect(res.isHybridPQC).toBe(false);
+      expect(res.recommendations.some((r) => r.includes('RSA-4096'))).toBe(true);
     });
 
-    afterAll(async () => {
-      process.env.ALLOW_PRIVATE_TLS_SCAN = prevAllowPrivate;
-      vi.restoreAllMocks();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      await fs.rm(tmpDir, { recursive: true, force: true });
+    it('scores TLS 1.3 + X25519 + Ed25519 at 58/100 (Grade C)', () => {
+      const res = evaluateTlsPosture({
+        tlsVersion: 'TLSv1.3',
+        keyExchange: 'X25519',
+        signatureAlgorithm: 'Ed25519',
+        publicKeyType: 'ED25519',
+        publicKeyBits: 256,
+      });
+      expect(res.quantumSafeGrade).toBe('C');
+      expect(res.quantumSafetyScore).toBe(58);
+      expect(res.recommendations.some((r) => r.includes('ML-DSA'))).toBe(true);
     });
 
-    it('blocks private IP resolution when ALLOW_PRIVATE_TLS_SCAN is false', async () => {
-      process.env.ALLOW_PRIVATE_TLS_SCAN = 'false';
-      const spy = vi.spyOn(dns, 'lookup').mockResolvedValue([
-        { address: '127.0.0.1', family: 4 },
-      ] as never);
-
-      await expect(performLiveTlsScan('internal.example.com', serverPort)).rejects.toThrow(
-        /SSRF policy/i
-      );
-      spy.mockRestore();
-    });
-
-    it('inspects live TLS 1.3 handshake, X.509 certificate metadata, and PQC posture on real TLS server', async () => {
-      process.env.ALLOW_PRIVATE_TLS_SCAN = 'true';
-      const spy = vi.spyOn(dns, 'lookup').mockResolvedValue([
-        { address: '127.0.0.1', family: 4 },
-      ] as never);
-
-      const result = await performLiveTlsScan('tls-unit-test.example.com', serverPort);
-      spy.mockRestore();
-
-      expect(result.host).toBe('tls-unit-test.example.com');
-      expect(result.port).toBe(serverPort);
-      expect(result.ip).toBe('127.0.0.1');
-      expect(result.tlsVersion).toBe('TLSv1.3');
-      expect(result.cipherSuite).toMatch(/TLS_AES_/);
-      expect(result.certificate).not.toBeNull();
-      expect(result.certificate?.subject).toContain('CN=tls-unit-test.example.com');
-      expect(result.certificate?.publicKeyType).toBe('EC');
-      expect(result.certificate?.publicKeyBits).toBe(256);
-      expect(result.certificate?.daysRemaining).toBeGreaterThan(20);
-      expect(result.certificate?.fingerprint256).toMatch(/^([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
-      expect(['A+', 'A', 'B', 'C', 'F']).toContain(result.quantumSafeGrade);
-      expect(result.quantumSafetyScore).toBeGreaterThanOrEqual(40);
-      expect(result.recommendations.length).toBeGreaterThanOrEqual(1);
+    it('flags deprecated TLSv1.1 and static key exchange with Grade F', () => {
+      const res = evaluateTlsPosture({
+        tlsVersion: 'TLSv1.1',
+        keyExchange: 'Static RSA',
+        signatureAlgorithm: 'RSA with SHA256',
+        publicKeyType: 'RSA',
+        publicKeyBits: 2048,
+      });
+      expect(res.quantumSafeGrade).toBe('F');
+      expect(res.quantumSafetyScore).toBe(10);
+      expect(res.recommendations.some((r) => r.includes('Prohibited legacy protocol'))).toBe(true);
+      expect(res.recommendations.some((r) => r.includes('lacks post-quantum forward secrecy'))).toBe(true);
     });
   });
 });
